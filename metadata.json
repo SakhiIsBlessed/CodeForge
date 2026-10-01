@@ -1,0 +1,6 @@
+{
+  "name": "CodeForge",
+  "description": "Production online cloud IDE and development platform with real-time projects, multi-language execution, sharing, and team collaboration.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

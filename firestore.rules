@@ -1,0 +1,198 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Default deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper functions
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-\\.]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null && request.auth.uid != null;
+    }
+
+    function isBootstrappedAdmin() {
+      return isSignedIn() && request.auth.token.email != null &&
+        request.auth.token.email.matches('(?i)^tapresakhii@gmail\\.com$');
+    }
+
+    function isAdmin() {
+      return isBootstrappedAdmin() || (isSignedIn() && exists(/databases/$(database)/documents/admins/$(request.auth.uid)));
+    }
+
+    // Validation functions
+    function isValidUserProfile(data) {
+      return data.keys().hasAll(['uid', 'fullName', 'username', 'email', 'createdAt', 'updatedAt']) &&
+             data.uid is string && data.uid == request.auth.uid &&
+             data.fullName is string && data.fullName.size() >= 1 && data.fullName.size() <= 100 &&
+             data.username is string && data.username.size() >= 3 && data.username.size() <= 30 &&
+             data.username.matches('^[a-zA-Z0-9_]{3,30}$') &&
+             data.email is string && data.email.size() <= 150;
+    }
+
+    function isValidProject(data) {
+      return data.keys().hasAll(['projectId', 'ownerId', 'name', 'language', 'visibility', 'createdAt', 'updatedAt']) &&
+             data.projectId is string && data.projectId.size() <= 128 &&
+             data.ownerId is string && data.ownerId == request.auth.uid &&
+             data.name is string && data.name.size() >= 1 && data.name.size() <= 100 &&
+             data.language is string && data.language.size() <= 30 &&
+             data.visibility in ['private', 'unlisted', 'public'];
+    }
+
+    function isValidProjectFile(data) {
+      return data.keys().hasAll(['fileId', 'projectId', 'name', 'path', 'content', 'createdAt', 'updatedAt']) &&
+             data.fileId is string && data.fileId.size() <= 128 &&
+             data.projectId is string && data.projectId.size() <= 128 &&
+             data.name is string && data.name.size() >= 1 && data.name.size() <= 100 &&
+             data.path is string && data.path.size() <= 300 &&
+             data.content is string && data.content.size() <= 500000;
+    }
+
+    function isValidExecution(data) {
+      return data.keys().hasAll(['executionId', 'userId', 'projectId', 'language', 'status', 'createdAt']) &&
+             data.executionId is string && data.executionId.size() <= 128 &&
+             data.userId is string && data.userId == request.auth.uid &&
+             data.projectId is string && data.projectId.size() <= 128 &&
+             data.language is string && data.language.size() <= 30 &&
+             data.status in ['Running', 'Success', 'Compilation Error', 'Runtime Error', 'Timeout', 'Failed'];
+    }
+
+    function isValidSharedProject(data) {
+      return data.keys().hasAll(['shareId', 'projectId', 'ownerId', 'permission', 'createdAt']) &&
+             data.shareId is string && data.shareId.size() <= 128 &&
+             data.projectId is string && data.projectId.size() <= 128 &&
+             data.ownerId is string && data.ownerId == request.auth.uid &&
+             data.permission in ['view', 'fork'];
+    }
+
+    function isValidReport(data) {
+      return data.keys().hasAll(['reportId', 'reporterId', 'targetId', 'targetType', 'reason', 'status', 'createdAt']) &&
+             data.reportId is string && data.reportId.size() <= 128 &&
+             data.reporterId is string && data.reporterId == request.auth.uid &&
+             data.targetId is string && data.targetId.size() <= 128 &&
+             data.targetType in ['project', 'shared', 'profile'] &&
+             data.reason is string && data.reason.size() <= 1000 &&
+             data.status in ['Open', 'Reviewing', 'Resolved', 'Dismissed'];
+    }
+
+    // Rules for User Profiles
+    match /users/{userId} {
+      allow get: if isValidId(userId) && (
+        (isSignedIn() && request.auth.uid == userId) ||
+        resource.data.isPublic == true ||
+        isAdmin()
+      );
+      allow list: if isSignedIn() && (
+        resource.data.uid == request.auth.uid ||
+        resource.data.isPublic == true ||
+        isAdmin()
+      );
+      allow create: if isSignedIn() && isValidId(userId) && request.auth.uid == userId && isValidUserProfile(incoming());
+      allow update: if isSignedIn() && isValidId(userId) && request.auth.uid == userId && isValidUserProfile(incoming()) && incoming().uid == existing().uid;
+      allow delete: if isSignedIn() && isValidId(userId) && (request.auth.uid == userId || isAdmin());
+
+      // Executions subcollection
+      match /executions/{executionId} {
+        allow get: if isSignedIn() && isValidId(userId) && isValidId(executionId) && (request.auth.uid == userId || isAdmin());
+        allow list: if isSignedIn() && isValidId(userId) && (request.auth.uid == userId || isAdmin());
+        allow create: if isSignedIn() && isValidId(userId) && isValidId(executionId) && request.auth.uid == userId && isValidExecution(incoming());
+        allow update: if isSignedIn() && isValidId(userId) && isValidId(executionId) && request.auth.uid == userId && isValidExecution(incoming()) && incoming().userId == existing().userId;
+        allow delete: if isSignedIn() && isValidId(userId) && isValidId(executionId) && (request.auth.uid == userId || isAdmin());
+      }
+    }
+
+    // Unique Username Registry
+    match /usernames/{username} {
+      allow get: if isValidId(username);
+      allow list: if false;
+      allow create: if isSignedIn() && isValidId(username) && incoming().userId == request.auth.uid && incoming().username == username;
+      allow update: if isSignedIn() && isValidId(username) && existing().userId == request.auth.uid && incoming().userId == existing().userId;
+      allow delete: if isSignedIn() && isValidId(username) && (existing().userId == request.auth.uid || isAdmin());
+    }
+
+    // Projects
+    match /projects/{projectId} {
+      allow get: if isValidId(projectId) && (
+        resource.data.visibility in ['public', 'unlisted'] ||
+        (isSignedIn() && (resource.data.ownerId == request.auth.uid || isAdmin()))
+      );
+      allow list: if (
+        resource.data.visibility == 'public' ||
+        (isSignedIn() && (resource.data.ownerId == request.auth.uid || isAdmin()))
+      );
+      allow create: if isSignedIn() && isValidId(projectId) && isValidProject(incoming());
+      allow update: if isSignedIn() && isValidId(projectId) && isValidProject(incoming()) &&
+                    incoming().ownerId == existing().ownerId &&
+                    (existing().ownerId == request.auth.uid || isAdmin());
+      allow delete: if isSignedIn() && isValidId(projectId) &&
+                    (resource.data.ownerId == request.auth.uid || isAdmin());
+
+      // Project Files
+      match /files/{fileId} {
+        allow get: if isValidId(projectId) && isValidId(fileId) && (
+          (exists(/databases/$(database)/documents/projects/$(projectId)) &&
+           (get(/databases/$(database)/documents/projects/$(projectId)).data.visibility in ['public', 'unlisted'] ||
+            (isSignedIn() && (get(/databases/$(database)/documents/projects/$(projectId)).data.ownerId == request.auth.uid || isAdmin())))) ||
+          isAdmin()
+        );
+        allow list: if isValidId(projectId) && (
+          (exists(/databases/$(database)/documents/projects/$(projectId)) &&
+           (get(/databases/$(database)/documents/projects/$(projectId)).data.visibility in ['public', 'unlisted'] ||
+            (isSignedIn() && (get(/databases/$(database)/documents/projects/$(projectId)).data.ownerId == request.auth.uid || isAdmin())))) ||
+          isAdmin()
+        );
+        allow create: if isSignedIn() && isValidId(projectId) && isValidId(fileId) &&
+                      isValidProjectFile(incoming()) &&
+                      ((exists(/databases/$(database)/documents/projects/$(projectId)) &&
+                        (get(/databases/$(database)/documents/projects/$(projectId)).data.ownerId == request.auth.uid || isAdmin())) ||
+                       isAdmin());
+        allow update: if isSignedIn() && isValidId(projectId) && isValidId(fileId) &&
+                      isValidProjectFile(incoming()) &&
+                      incoming().projectId == existing().projectId &&
+                      ((exists(/databases/$(database)/documents/projects/$(projectId)) &&
+                        (get(/databases/$(database)/documents/projects/$(projectId)).data.ownerId == request.auth.uid || isAdmin())) ||
+                       isAdmin());
+        allow delete: if isSignedIn() && isValidId(projectId) && isValidId(fileId) &&
+                      ((exists(/databases/$(database)/documents/projects/$(projectId)) &&
+                        (get(/databases/$(database)/documents/projects/$(projectId)).data.ownerId == request.auth.uid || isAdmin())) ||
+                       isAdmin());
+      }
+    }
+
+    // Shared project references
+    match /sharedProjects/{shareId} {
+      allow get: if isValidId(shareId);
+      allow list: if isSignedIn() && (resource.data.ownerId == request.auth.uid || isAdmin());
+      allow create: if isSignedIn() && isValidId(shareId) && isValidSharedProject(incoming());
+      allow update: if isSignedIn() && isValidId(shareId) && isValidSharedProject(incoming()) &&
+                    incoming().ownerId == existing().ownerId &&
+                    (existing().ownerId == request.auth.uid || isAdmin());
+      allow delete: if isSignedIn() && isValidId(shareId) && (existing().ownerId == request.auth.uid || isAdmin());
+    }
+
+    // Moderation reports
+    match /reports/{reportId} {
+      allow create: if isSignedIn() && isValidId(reportId) && isValidReport(incoming());
+      allow read, update, delete: if isAdmin();
+    }
+
+    // Admin records
+    match /admins/{userId} {
+      allow read: if isSignedIn();
+      allow write: if isBootstrappedAdmin();
+    }
+  }
+}
